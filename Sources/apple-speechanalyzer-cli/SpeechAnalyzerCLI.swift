@@ -1,3 +1,13 @@
+
+// Apple Speech Analyzer CLI (macOS 26.0+)
+// Build with: swift build -c release
+// Usage:
+//   .build/release/apple-speechanalyzer-cli \
+//       --input-audio-path <path-to-audio> \
+//       --output-txt-path <path-to-output> [--locale en-US] [--live]
+//
+// Requires: Xcode 26 beta command-line tools and macOS 26.0 runtime.
+
 import Foundation
 import AVFAudio
 import Speech
@@ -9,26 +19,25 @@ struct SpeechAnalyzerCLI {
         var inputPath: String?
         var outputPath: String?
         var localeIdentifier = Locale.current.identifier
+        var liveMode = false
         var customPhrasesString: String?
-        var debug = false
-        var useServerRecognition = false // Default to on-device with SpeechTranscriber
+        var useSFSpeech = false // Use SFSpeechRecognizer instead of SpeechTranscriber
 
         var it = CommandLine.arguments.dropFirst().makeIterator()
         while let arg = it.next() {
             switch arg {
             case "--input-audio-path": inputPath  = it.next()
-            case "--output-text-path": outputPath = it.next()
+            case "--output-txt-path":  outputPath = it.next()
             case "--locale":           localeIdentifier = it.next() ?? localeIdentifier
+            case "--live":             liveMode = true
             case "--custom-phrases":   customPhrasesString = it.next()
-            case "--debug":            debug = true
-            case "--server":           useServerRecognition = true // Use SFSpeechRecognizer with server
-            default:                   break
+            case "--sfspeech":         useSFSpeech = true
+            default:                   CLIUsage.exit()
             }
         }
 
         guard let inPath = inputPath, let outPath = outputPath else {
-            fputs("Usage: cli --input-audio-path <file> --output-text-path <file> [--custom-phrases <p>] [--server] [--debug]\n", stderr)
-            Darwin.exit(1)
+            CLIUsage.exit()
         }
 
         // Parse phrases
@@ -36,52 +45,36 @@ struct SpeechAnalyzerCLI {
             String($0).trimmingCharacters(in: .whitespaces)
         }
 
-        if debug {
-            fputs("=== DEBUG: Input Parameters ===\n", stderr)
-            fputs("  Input: \(inPath)\n", stderr)
-            fputs("  Output: \(outPath)\n", stderr)
-            fputs("  Locale: \(localeIdentifier)\n", stderr)
-            fputs("  Custom phrases: \(customPhrases ?? [])\n", stderr)
-            fputs("  Use server: \(useServerRecognition)\n", stderr)
-        }
-
         let locale = Locale(identifier: localeIdentifier)
         let inputURL  = URL(fileURLWithPath: inPath)
         let outputURL = URL(fileURLWithPath: outPath)
 
-        // If we have custom phrases and want them to work, use server-based recognition
-        // contextualStrings only works with SFSpeechRecognizer + server (not on-device)
+        // If we have custom phrases and want them to work, use SFSpeechRecognizer
+        // contextualStrings only works with SFSpeechRecognizer (not SpeechTranscriber)
         let hasCustomPhrases = customPhrases?.isEmpty == false
-        let shouldUseServer = useServerRecognition || hasCustomPhrases
+        let shouldUseSFSpeech = useSFSpeech || hasCustomPhrases
 
         var plainText = ""
 
-        if shouldUseServer {
-            // Use SFSpeechRecognizer with server-based recognition
+        if shouldUseSFSpeech {
+            // Use SFSpeechRecognizer
             // This is the only way contextualStrings actually works
-            if debug {
-                fputs("\n=== Using SFSpeechRecognizer (server-based) for contextualStrings support ===\n", stderr)
-            }
-
             guard let recognizer = SFSpeechRecognizer(locale: locale) else {
                 fputs("Error: Could not create SFSpeechRecognizer for locale \(localeIdentifier)\n", stderr)
-                Darwin.exit(1)
+                Darwin.exit(EXIT_FAILURE)
             }
 
             if !recognizer.isAvailable {
                 fputs("Error: Speech recognizer not available\n", stderr)
-                Darwin.exit(1)
+                Darwin.exit(EXIT_FAILURE)
             }
 
             let request = SFSpeechURLRecognitionRequest(url: inputURL)
-            request.requiresOnDeviceRecognition = false // CRITICAL: Use server for contextualStrings
+            request.requiresOnDeviceRecognition = false
             request.addsPunctuation = true
 
             if let phrases = customPhrases, !phrases.isEmpty {
                 request.contextualStrings = phrases
-                if debug {
-                    fputs("  Set contextualStrings: \(phrases)\n", stderr)
-                }
             }
 
             // Perform recognition using continuation for async/await compatibility
@@ -99,59 +92,63 @@ struct SpeechAnalyzerCLI {
                 }
             } catch {
                 fputs("Error: \(error)\n", stderr)
-                Darwin.exit(1)
+                Darwin.exit(EXIT_FAILURE)
             }
 
         } else {
-            // Use new SpeechTranscriber (on-device, faster, but contextualStrings don't work)
+            // Use new SpeechTranscriber (on-device, faster)
             guard #available(macOS 26.0, *) else {
-                fputs("Error: SpeechTranscriber requires macOS 26.0+\n", stderr)
-                Darwin.exit(1)
-            }
-
-            if debug {
-                fputs("\n=== Using SpeechTranscriber (on-device) ===\n", stderr)
+                fputs("Error: SpeechTranscriber requires macOS 26.0 or newer.\n", stderr)
+                Darwin.exit(EXIT_FAILURE)
             }
 
             let transcriber = SpeechTranscriber(
                 locale: locale,
-                transcriptionOptions: [],
-                reportingOptions: [],
-                attributeOptions: []
+                preset: liveMode ? .progressiveLiveTranscription : .offlineTranscription
             )
 
-            let installedLocales = await SpeechTranscriber.installedLocales
-            if !installedLocales.contains(where: { $0.identifier == locale.identifier }) {
+            if !(await SpeechTranscriber.installedLocales).contains(locale) {
+                FileHandle.standardError.write(Data("Downloading speech model for \(localeIdentifier)…\n".utf8))
                 if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                     try await request.downloadAndInstall()
                 }
             }
 
-            let audioFile = try AVAudioFile(forReading: inputURL)
+            let analyzer    = SpeechAnalyzer(modules: [transcriber])
+            let audioFile   = try AVAudioFile(forReading: inputURL)
 
-            // Note: context is NOT used here because it doesn't work with SpeechTranscriber
-            let _ = try await SpeechAnalyzer(
-                inputAudioFile: audioFile,
-                modules: [transcriber],
-                finishAfterFile: true
-            )
-
-            // Collect results
-            var transcript = AttributedString("")
-            for try await result in transcriber.results {
-                transcript.append(result.text)
-                transcript.append(AttributedString(" "))
+            async let attrTranscript: AttributedString = transcriber.results.reduce(into: AttributedString("")) { partial, result in
+                partial.append(result.text)
+                partial.append(AttributedString(" "))
             }
 
-            plainText = String(transcript.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+            if let last = try await analyzer.analyzeSequence(from: audioFile) {
+                try await analyzer.finalizeAndFinish(through: last)
+            } else {
+                await analyzer.cancelAndFinishNow()
+            }
 
-        if debug {
-            fputs("\n=== DEBUG: Final Transcript ===\n", stderr)
-            fputs("  \(plainText)\n", stderr)
+            plainText = String((try await attrTranscript).characters)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         try plainText.write(to: outputURL, atomically: true, encoding: .utf8)
-        print("OK")
+        print("✅ Saved transcript to \(outputURL.path)")
+    }
+}
+
+enum CLIUsage {
+    static func exit() -> Never {
+        let prog = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "apple-speechanalyzer-cli"
+        fputs("""
+Usage: \(prog) --input-audio-path <file> --output-txt-path <file> [--locale <id>] [--live] [--sfspeech] [--custom-phrases <phrases>]
+
+Example:
+  .build/release/\(prog) --input-audio-path demo.flac \\
+                         --output-txt-path demo.txt \\
+                         --locale en-US
+
+""", stderr)
+        Darwin.exit(EXIT_FAILURE)
     }
 }
