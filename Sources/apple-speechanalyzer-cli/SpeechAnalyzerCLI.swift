@@ -4,7 +4,7 @@
 // Usage:
 //   .build/release/apple-speechanalyzer-cli \
 //       --input-audio-path <path-to-audio> \
-//       --output-txt-path <path-to-output> [--locale en-US]
+//       --output-text-path <path-to-output> [--locale en-US]
 //
 // Requires: Xcode 26 beta command-line tools and macOS 26.0 runtime.
 
@@ -26,7 +26,7 @@ struct SpeechAnalyzerCLI {
         while let arg = it.next() {
             switch arg {
             case "--input-audio-path": inputPath  = it.next()
-            case "--output-txt-path":  outputPath = it.next()
+            case "--output-text-path": outputPath = it.next()
             case "--locale":           localeIdentifier = it.next() ?? localeIdentifier
             case "--custom-phrases":   customPhrasesString = it.next()
             case "--sfspeech":         useSFSpeech = true
@@ -141,7 +141,7 @@ enum CLIUsage {
     static func exit() -> Never {
         let prog = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "apple-speechanalyzer-cli"
         fputs("""
-Usage: \(prog) --input-audio-path <file> --output-txt-path <file> [--locale <id>] [--sfspeech] [--custom-phrases <phrases>]
+Usage: \(prog) --input-audio-path <file> --output-text-path <file> [--locale <id>] [--sfspeech] [--custom-phrases <phrases>]
 
 Example:
   .build/release/\(prog) --input-audio-path demo.flac \\
