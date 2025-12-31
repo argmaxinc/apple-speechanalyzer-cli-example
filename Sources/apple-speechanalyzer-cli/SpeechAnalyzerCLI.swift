@@ -4,7 +4,7 @@
 // Usage:
 //   .build/release/apple-speechanalyzer-cli \
 //       --input-audio-path <path-to-audio> \
-//       --output-txt-path <path-to-output> [--locale en-US] [--live]
+//       --output-txt-path <path-to-output> [--locale en-US]
 //
 // Requires: Xcode 26 beta command-line tools and macOS 26.0 runtime.
 
@@ -19,7 +19,6 @@ struct SpeechAnalyzerCLI {
         var inputPath: String?
         var outputPath: String?
         var localeIdentifier = Locale.current.identifier
-        var liveMode = false
         var customPhrasesString: String?
         var useSFSpeech = false // Use SFSpeechRecognizer instead of SpeechTranscriber
 
@@ -29,7 +28,6 @@ struct SpeechAnalyzerCLI {
             case "--input-audio-path": inputPath  = it.next()
             case "--output-txt-path":  outputPath = it.next()
             case "--locale":           localeIdentifier = it.next() ?? localeIdentifier
-            case "--live":             liveMode = true
             case "--custom-phrases":   customPhrasesString = it.next()
             case "--sfspeech":         useSFSpeech = true
             default:                   CLIUsage.exit()
@@ -104,7 +102,9 @@ struct SpeechAnalyzerCLI {
 
             let transcriber = SpeechTranscriber(
                 locale: locale,
-                preset: liveMode ? .progressiveLiveTranscription : .offlineTranscription
+                transcriptionOptions: [],
+                reportingOptions: [],
+                attributeOptions: []
             )
 
             if !(await SpeechTranscriber.installedLocales).contains(locale) {
@@ -141,7 +141,7 @@ enum CLIUsage {
     static func exit() -> Never {
         let prog = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "apple-speechanalyzer-cli"
         fputs("""
-Usage: \(prog) --input-audio-path <file> --output-txt-path <file> [--locale <id>] [--live] [--sfspeech] [--custom-phrases <phrases>]
+Usage: \(prog) --input-audio-path <file> --output-txt-path <file> [--locale <id>] [--sfspeech] [--custom-phrases <phrases>]
 
 Example:
   .build/release/\(prog) --input-audio-path demo.flac \\
